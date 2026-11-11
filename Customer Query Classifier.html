@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Customer Query Classifier – Prompt Delivery</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1a1d23;--muted:#5d6572;--line:#dfe3e8;--accent:#2f5bea;--accent-t:#fff;--code:#f0f2f5;--ok:#157347;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14161a;--card:#1c1f25;--text:#e8eaee;--muted:#9aa3b0;--line:#2e333c;--accent:#6f8cff;--accent-t:#0b0e14;--code:#12141a;--ok:#4cc38a;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#14161a;--card:#1c1f25;--text:#e8eaee;--muted:#9aa3b0;--line:#2e333c;--accent:#6f8cff;--accent-t:#0b0e14;--code:#12141a;--ok:#4cc38a;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:1.5rem;margin:0 0 4px}
+p.sub{margin:0 0 20px;color:var(--muted)}
+section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+h2{font-size:1rem;margin:0 0 10px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+pre{margin:0;background:var(--code);border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap;word-break:break-word;font:13px/1.55 ui-monospace,Menlo,Consolas,monospace;max-height:340px;overflow:auto}
+textarea{width:100%;min-height:90px;resize:vertical;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--code);color:var(--text);font:inherit}
+textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text);padding:7px 12px}
+button.primary{background:var(--accent);color:var(--accent-t);border-color:var(--accent);font-weight:600;padding:9px 18px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
+.chips button{font-size:.8rem;padding:4px 10px;border-radius:999px;color:var(--muted)}
+#out{margin-top:12px;font:600 1.6rem ui-monospace,Menlo,Consolas,monospace;color:var(--ok);background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px;min-height:60px}
+#out.empty{color:var(--muted);font-weight:400;font-size:1rem}
+.cats{display:flex;gap:6px;flex-wrap:wrap}
+.cats span{font:12px ui-monospace,Menlo,monospace;background:var(--code);border:1px solid var(--line);border-radius:6px;padding:2px 8px}
+small{color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+  <h1>Customer Query Classifier</h1>
+  <p class="sub">Prompt delivery: copy the strict classification prompt, and test queries against it. Output is always exactly one category word.</p>
+
+  <section>
+    <h2>Categories <span class="cats" style="font-weight:400"></span></h2>
+    <div class="cats" id="cats"></div>
+  </section>
+
+  <section>
+    <h2>Classification prompt <button id="copyPrompt" type="button">Copy</button></h2>
+    <pre id="prompt"></pre>
+    <div class="row"><small>The customer query is appended where <code>{{QUERY}}</code> appears. Use the box below to fill it in.</small></div>
+  </section>
+
+  <section>
+    <h2>Test a query</h2>
+    <textarea id="q" placeholder="e.g. My order was supposed to arrive on Monday but I still haven't received it"></textarea>
+    <div class="row">
+      <button id="go" class="primary" type="button">Classify</button>
+      <button id="copyFull" type="button">Copy full prompt with query</button>
+    </div>
+    <div class="row chips" id="chips"></div>
+    <div id="out" class="empty" aria-live="polite">Output appears here</div>
+  </section>
+</main>
+
+<script>
+const CATS=["Delivery","Shipping","Refund","Payment","Cancellation","Defect","Return","Account","Unknown"];
+
+const PROMPT=`You are a customer query classifier for an e-commerce company.
+
+Classify the customer query into exactly ONE of these categories:
+Delivery, Shipping, Refund, Payment, Cancellation, Defect, Return, Account, Unknown
+
+Category definitions:
+- Delivery: order status, tracking, delays, late or missing packages, delivery date or time.
+- Shipping: shipping charges, shipping methods, speed options, international shipping, shipping address or coverage.
+- Refund: money back, refund status, refund amount, refund timeline.
+- Payment: failed or declined payments, double charges, payment methods, invoices, billing, coupons at checkout.
+- Cancellation: cancelling an order or subscription before it is delivered.
+- Defect: damaged, broken, faulty, defective, wrong or not-working items.
+- Return: returning, exchanging or replacing an item, return pickup or policy.
+- Account: login, password, profile, email or phone change, registration, account deletion.
+- Unknown: anything that fits none of the above, or is unclear or unrelated.
+
+Rules:
+1. Output exactly one category word from the list above.
+2. No explanations, no punctuation, no quotes, no extra text, no line breaks.
+3. Use the exact spelling and capitalization shown above.
+4. If the query matches several categories, choose the one that represents the customer's main request.
+5. If you are not sure, output Unknown.
+
+Customer query: {{QUERY}}
+Category:`;
+
+// Local rule-based classifier (offline demo of the same logic as the prompt)
+const RULES={
+ Cancellation:[[/\bcancel+(ed|ing|lation|led)?\b/,5],[/\bstop (my|the) order\b/,4],[/\bunsubscribe\b/,3]],
+ Defect:[[/\b(damag\w*|broken|defect\w*|faulty|cracked|torn|shattered|malfunction\w*|stopped working|not working|doesn'?t work|dead on arrival|wrong item|scratch\w*|leak\w*)\b/,5]],
+ Refund:[[/\brefund\w*\b/,6],[/\bmoney back\b/,5],[/\breimburse\w*\b/,4],[/\bcredited back\b/,3]],
+ Return:[[/\breturn\w*\b/,5],[/\bexchange\b/,5],[/\breplace(ment)?\b/,4],[/\bsend (it|this) back\b/,5],[/\bpick ?up\b/,2]],
+ Payment:[[/\b(payment|paid|pay|charged|charge|billing|bill|invoice|card|upi|debit|credit|transaction|checkout|coupon|promo|declined|net ?banking|wallet)\b/,4],[/\bdouble charged?\b/,3]],
+ Account:[[/\b(login|log in|sign ?in|sign ?up|password|account|profile|username|otp|register\w*|verify|email address|phone number)\b/,5]],
+ Shipping:[[/\bshipping\b/,5],[/\bship (to|internationally|abroad)\b/,5],[/\b(express|standard|overnight) (delivery|shipping)\b/,3],[/\binternational\b/,3],[/\bdelivery (charges?|fees?|cost)\b/,5],[/\bdo you (ship|deliver)\b/,5],[/\bchange (my )?(shipping |delivery )?address\b/,3]],
+ Delivery:[[/\b(deliver\w*|arriv\w*|track\w*|delay\w*|late|courier|parcel|package|where is my order|not received|haven'?t received|yet to receive|out for)\b/,4],[/\bwhen (will|does|is) (it|my order)\b/,3]]
+};
+function classify(text){
+  const t=String(text||"").toLowerCase().trim();
+  if(!t) return "Unknown";
+  let best="Unknown",bestScore=0;
+  for(const c of CATS){
+    if(c==="Unknown") continue;
+    let s=0;
+    for(const [re,w] of (RULES[c]||[])) if(re.test(t)) s+=w;
+    if(s>bestScore){bestScore=s;best=c;}
+  }
+  // Strict output guard: exactly one valid category word
+  return CATS.includes(best)?best:"Unknown";
+}
+
+const $=id=>document.getElementById(id);
+$("cats").innerHTML=CATS.map(c=>`<span>${c}</span>`).join("");
+$("prompt").textContent=PROMPT;
+
+const EXAMPLES=["Where is my order? It was due 3 days ago","How much do you charge for shipping to Dubai?","I want my money back for order #4521","My card was charged twice","Please cancel my order","The phone screen arrived cracked","I'd like to return these shoes","I forgot my password","What's your favorite color?"];
+$("chips").innerHTML=EXAMPLES.map((e,i)=>`<button type="button" data-i="${i}">${e.length>28?e.slice(0,28)+"…":e}</button>`).join("");
+$("chips").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;$("q").value=EXAMPLES[+b.dataset.i];run();});
+
+function run(){
+  const r=classify($("q").value);
+  const o=$("out");o.classList.remove("empty");o.textContent=r;
+}
+$("go").addEventListener("click",run);
+$("q").addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.ctrlKey||e.metaKey))run();});
+
+async function copy(text,btn){
+  const old=btn.textContent;
+  try{await navigator.clipboard.writeText(text);btn.textContent="Copied";}
+  catch(_){
+    const ta=document.createElement("textarea");ta.value=text;document.body.appendChild(ta);ta.select();
+    try{document.execCommand("copy");btn.textContent="Copied";}catch(__){btn.textContent="Copy failed";}
+    ta.remove();
+  }
+  setTimeout(()=>btn.textContent=old,1400);
+}
+$("copyPrompt").addEventListener("click",e=>copy(PROMPT,e.target));
+$("copyFull").addEventListener("click",e=>copy(PROMPT.replace("{{QUERY}}",$("q").value.trim()||"{{QUERY}}"),e.target));
+</script>
+</body>
+</html>
